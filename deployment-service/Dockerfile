@@ -20,8 +20,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Добавляем переменные окружения для Kafka
-
-ENV KAFKA_BOOTSTRAP_SERVERS=kafka.service.consul:9092
+ENV KAFKA_BOOTSTRAP_SERVERS=kafka:9092
 ENV PYTHONUNBUFFERED=1
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Добавляем ожидание Kafka перед стартом приложения (чтобы не падало при старте)
+
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8003", "--reload"]

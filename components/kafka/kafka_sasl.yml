@@ -1,0 +1,112 @@
+- name: Install and Configure Kafka with SASL
+  hosts: localhost
+  become: yes
+  vars:
+    kafka_user: "kafka"
+    kafka_group: "kafka"
+    sasl_mechanism: "PLAIN"
+    kafka_listeners: "SASL_PLAINTEXT://localhost:9092"
+    kafka_inter_broker_listener_name: "SASL_PLAINTEXT"
+    sasl_plain_username: "admin"
+    sasl_plain_password: "admin-password"
+  tasks:
+    - name: Install Java
+      apt:
+        name: default-jdk
+        state: present
+        update_cache: yes
+
+    - name: Create Kafka group
+      group:
+        name: kafka
+        state: present
+        system: yes
+
+    - name: Create Kafka user and group
+      user:
+        name: kafka
+        group: kafka
+        shell: /bin/bash  
+        system: yes
+        state: present
+
+    - name: Download Kafka binaries
+      get_url:
+        url: "https://downloads.apache.org/kafka/3.9.0/kafka_2.12-3.9.0.tgz"
+        dest: "/tmp/kafka.tgz"
+        mode: '0644'
+      register: kafka_download
+
+    - name: Extract Kafka Binaries
+      ansible.builtin.unarchive:
+        src: "/tmp/kafka.tgz"
+        dest: "/opt"
+        remote_src: yes
+
+    - name: Set up kafka directory
+      file:
+        path: "/opt/kafka"
+        src: "/opt/kafka_2.12-3.9.0"
+        state: link
+
+    - name: Set permissions for Kafka directory
+      file:
+        path: /opt/kafka
+        state: directory
+        owner: kafka
+        group: kafka
+        mode: '0755'
+        recurse: yes
+
+    - name: Configure Kafka server.properties
+      copy:
+        src: service.properties
+        dest: "/opt/kafka/config/server.properties"
+
+    - name: Configure Kafka JAAS file
+      copy:
+        src: kafka_server_jaas.conf
+        dest: "/opt/kafka/config/kafka_server_jaas.conf"
+
+    - name: Set environment variable for kafka
+      lineinfile:
+        path: "/etc/environment"
+        line: "KAFKA_OPTS=-Djava.security.auth.login.config=/opt/kafka/config/kafka_server_jaas.conf"
+        state: present
+
+    - name: Create client-sasl.properties file
+      copy:
+        src: client-sasl.properties
+        dest: "/opt/kafka/config/client-sasl.properties"
+
+    - name: Create Zookeeper systemd service file
+      copy:
+        src: zookeeper.service
+        dest: /etc/systemd/system/zookeeper.service
+
+    - name: Create Kafka systemd service file
+      copy:
+        src: kafka_sasl.service
+        dest: /etc/systemd/system/kafka.service
+
+    - name: Enable and Start Kafka Service
+      ansible.builtin.systemd:
+        name: kafka
+        enabled: yes
+        state: started
+
+    - name: Enable and Start Zookeeper Service
+      ansible.builtin.systemd:
+        name: zookeeper
+        enabled: yes
+        state: started
+
+    - name: Start Kafka Service
+      ansible.builtin.systemd:
+        name: kafka
+        state: started
+
+    - name: Start Zookeeper Service
+      ansible.builtin.systemd:
+        name: zookeeper
+        state: started

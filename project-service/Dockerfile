@@ -14,10 +14,7 @@ COPY . .
 
 EXPOSE 8001
 
-ENV KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+ENV KAFKA_BOOTSTRAP_SERVERS=kafka.service.consul:9092
 ENV PYTHONUNBUFFERED=1
 
-CMD bash -c "echo '⏳ Waiting for Kafka...' && \
-    while ! nc -z kafka 9092; do sleep 1; done && \
-    echo '✅ Kafka is up!' && \
-    uvicorn main:app --host 0.0.0.0 --port 8001 --reload"
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--reload"]

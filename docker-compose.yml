@@ -1,8 +1,29 @@
 services:
+  # Docker Registry for storing built images
+  registry:
+    image: registry:2
+    container_name: docker-registry
+    restart: always
+    ports:
+      - "5000:5000"
+    environment:
+      - REGISTRY_STORAGE_DELETE_ENABLED=true
+      - REGISTRY_VALIDATION_MANIFESTS_URLS_ALLOW=[^http, ^https]
+    volumes:
+      - registry-data:/var/lib/registry
+    networks:
+      - proxy
+    labels:
+    - "traefik.enable=true"
+    - "traefik.http.routers.registry.rule=Host(`registry.localhost`)"
+    - "traefik.http.routers.registry.entrypoints=web"
+
   zookeeper:
     image: confluentinc/cp-zookeeper:7.4.0
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
+    networks:
+      - proxy
 
   kafka:
     image: confluentinc/cp-kafka:7.4.0
@@ -15,21 +36,30 @@ services:
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
       KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3
     healthcheck:
       test: ["CMD", "bash", "-c", "nc -z localhost 9092"]
       interval: 5s
       timeout: 5s
       retries: 10
+    networks:
+      - proxy
+  kafka-uis:
+        image: provectuslabs/kafka-ui:latest
+        container_name: kafka-uis
+        restart: always
+        depends_on:
+            - kafka
+        environment:
+            KAFKA_CLUSTERS_0_NAME: local
+            KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: 'kafka:9092'
+            KAFKA_CLUSTERS_0_ZOOKEEPER: 'zookeeper:2181'
+        ports:
+            - "0.0.0.0:8080:8080"
+        networks:
+          - proxy
       
-  db:
-    container_name: github-reg-db
-    image: postgres:17
-    ports:
-      - "5434:5432"
-    environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
 
   auth-servise:
     container_name: github-reg-service
@@ -43,8 +73,10 @@ services:
       - SECRET_KEY=${JWT_SECRET}
       - KAFKA_BROKER=kafka:9092  
     depends_on:
-      - db
       - kafka
+    networks:
+      - proxy
+
 
   project-service:
     container_name: project-service
@@ -56,5 +88,191 @@ services:
     environment:
       - SECRET_KEY=${JWT_SECRET}
       - KAFKA_BROKER=kafka:9092
+      - SECRET_MANAGER_URL=http://secret-manager:8002
     depends_on:
       - kafka
+      - secret-manager
+    networks:
+      - proxy
+
+  vault:
+    container_name: vault
+    image: hashicorp/vault:1.15
+    ports:
+      - "8201:8201"
+    environment:
+      - VAULT_DEV_ROOT_TOKEN_ID=root
+      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8201
+    cap_add:
+      - IPC_LOCK
+    command: server -dev
+    networks:
+      - proxy
+
+  secret-manager:
+    container_name: secret-manager
+    build:
+      context: secret_manager_service
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8002"
+    environment:
+      - VAULT_ADDR=http://vault:8201
+      - VAULT_TOKEN=root
+      - KAFKA_BROKER=kafka:9092
+    depends_on:
+      - vault
+      - kafka
+    networks:
+      - proxy
+
+  deployment-service:
+    container_name: deployment-service
+    build:
+      context: deployment-service
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8003"
+    environment:
+      - SECRET_KEY=${JWT_SECRET}
+      - NOMAD_ADDR=http://nomad:4646
+      - CONSUL_ADDR=http://consul:8500
+      - KAFKA_BROKER=kafka:9092
+      - FRONTEND_URL=http://localhost:3000
+      - SECRET_MANAGER_URL=http://secret-manager:8002
+    networks:
+      - proxy
+    depends_on:
+      - consul
+      - kafka
+      - nomad
+      - secret-manager
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  traefik:
+      image: traefik:v3.4
+      container_name: traefik-test
+      restart: unless-stopped
+      security_opt:
+        - no-new-privileges:true
+
+      networks:
+      # Connect to the 'traefik_proxy' overlay network for inter-container communication across nodes
+        - proxy
+
+      ports:
+        - "80:80"
+        - "443:443"
+        - "8081:8081"
+
+      volumes:
+        - /var/run/docker.sock:/var/run/docker.sock:ro
+        - ./traefik/certs:/certs:ro
+        - ./traefik:/dynamic:ro
+
+      command:
+        # EntryPoints
+        - "--entrypoints.web.address=:80"
+        - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+        - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+        - "--entrypoints.web.http.redirections.entrypoint.permanent=true"
+        - "--entrypoints.websecure.address=:443"
+        - "--entrypoints.websecure.http.tls=true"
+
+        # Attach the static configuration tls.yaml file that contains the tls configuration settings
+        - "--providers.file.filename=/dynamic/tls.yaml"
+
+        # Providers
+        - "--providers.docker=true"
+        - "--providers.docker.exposedbydefault=false"
+        - "--providers.docker.network=proxy"
+
+        # Consul Catalog Provider
+        - "--providers.consulcatalog=true"
+        - "--providers.consulcatalog.endpoint.address=consul:8500"
+        - "--providers.consulcatalog.exposedbydefault=false"
+        - "--providers.consulcatalog.prefix=traefik"
+
+        # API & Dashboard
+        - "--api.dashboard=true"
+        - "--api.insecure=true"
+        - "--entrypoints.traefik.address=:8081"
+
+        # Observability 
+        - "--log.level=INFO"
+        - "--accesslog=true"
+        - "--metrics.prometheus=true"
+
+    # Traefik Dynamic configuration via Docker labels
+      labels:
+        # Enable self‑routing
+        - "traefik.enable=true"
+
+        # Dashboard router (accessible via port 8081 in insecure mode)
+        - "traefik.http.routers.dashboard.rule=Host(`dashboard.docker.localhost`)"
+        - "traefik.http.routers.dashboard.entrypoints=websecure"
+        - "traefik.http.routers.dashboard.service=api@internal"
+        - "traefik.http.routers.dashboard.tls=true"
+
+# Whoami application
+  
+  nomad:
+    image: hashicorp/nomad:1.10.5
+    container_name: nomad
+    privileged: true
+    command: agent -config=/etc/nomad/nomad.hcl
+    ports:
+      - "4646:4646"
+      - "4647:4647"
+      - "4648:4648"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      - ./nomad-config.hcl:/etc/nomad/nomad.hcl:ro
+      - nomad-data:/var/lib/nomad
+    cap_add:
+      - IPC_LOCK
+      - SYS_ADMIN
+    depends_on:
+      - consul
+    networks:
+      - proxy
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.nomad.rule=Host(`nomad.docker.localhost`)"
+      - "traefik.http.routers.nomad.entrypoints=websecure"
+      - "traefik.http.routers.nomad.service=nomad"
+      - "traefik.http.services.nomad.loadbalancer.server.port=4646"
+      - "traefik.http.routers.nomad.tls=true"
+
+  
+  consul:
+    image: hashicorp/consul:latest
+    container_name: consul
+    command: agent -server -ui -bootstrap-expect=1 -client=0.0.0.0
+    ports:
+      - "8500:8500"  # HTTP API & UI
+      - "8600:8600/udp"  # DNS
+    environment:
+      - CONSUL_BIND_INTERFACE=eth0
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.consul.rule=Host(`consul.docker.localhost`)"
+      - "traefik.http.routers.consul.entrypoints=websecure"
+      - "traefik.http.routers.consul.tls=true"
+    volumes:
+      - consul-data:/consul/data
+    networks:
+      - proxy
+
+networks:
+  proxy:
+    name: proxy
+
+volumes:
+  registry-data:
+  consul-data:
+  nomad-data:
+    driver: local

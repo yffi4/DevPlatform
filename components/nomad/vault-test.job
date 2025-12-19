@@ -1,0 +1,46 @@
+job "vault-template-test" {
+  datacenters = ["dc1"]
+  type = "batch"
+
+  group "test" {
+    task "check-secret" {
+      driver = "exec"
+
+      identity {
+        name = "vault"
+        aud  = ["vault.io"]
+      }
+
+      env {
+        VAULT_ADDR = "http://127.0.0.1:8200"
+      }
+
+      template {
+        destination = "local/secret.txt"
+        env         = false
+        data = <<EOF
+{{ with secret "secret/data/nomad-test" }}
+value={{ .Data.data.value }}
+{{ end }}
+EOF
+      }
+
+      config {
+        command = "/bin/bash"
+        args = [
+          "-c",
+          <<EOF
+echo "== Rendered secret =="
+cat local/secret.txt
+sleep 30
+EOF
+        ]
+      }
+
+      resources {
+        cpu    = 100
+        memory = 64
+      }
+    }
+  }
+}

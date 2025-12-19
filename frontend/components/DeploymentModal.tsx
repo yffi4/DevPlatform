@@ -4,6 +4,7 @@ import { useState, useEffect } from "react"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter } from "./ui/dialog"
 import { Button } from "./ui/button"
 import { Card } from "./ui/card"
+import { DeploymentProgressModal } from "./DeploymentProgressModal"
 import {
   Folder,
   ChevronRight,
@@ -15,10 +16,16 @@ import {
   X,
   CheckCircle2,
   AlertCircle,
+  Upload,
+  FileText,
+  Shield,
+  Rocket,
 } from "lucide-react"
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000"
 const PROJECT_SERVICE_URL = process.env.PROJECT_SERVICE_URL|| "http://localhost:8001"
+const SECRET_MANAGER_URL = process.env.SECRET_MANAGER_URL || "http://localhost:8002"
+
 interface FileItem {
   name: string
   path: string
@@ -31,7 +38,6 @@ interface DeploymentModalProps {
   onOpenChange: (open: boolean) => void
   owner: string
   repo: string
-  onDeploy: (data: DeploymentData) => void
 }
 
 export interface DeploymentData {
@@ -45,7 +51,7 @@ interface Secret {
   value: string
 }
 
-export function DeploymentModal({ open, onOpenChange, owner, repo, onDeploy }: DeploymentModalProps) {
+export function DeploymentModal({ open, onOpenChange, owner, repo }: DeploymentModalProps) {
   // Folder selection state
   const [currentPath, setCurrentPath] = useState("")
   const [contents, setContents] = useState<FileItem[]>([])
@@ -65,9 +71,17 @@ export function DeploymentModal({ open, onOpenChange, owner, repo, onDeploy }: D
   const [showSecretForm, setShowSecretForm] = useState(false)
   const [newSecretKey, setNewSecretKey] = useState("")
   const [newSecretValue, setNewSecretValue] = useState("")
+  const [envFileText, setEnvFileText] = useState("")
+  const [showEnvTextArea, setShowEnvTextArea] = useState(false)
+  const [secretsSaved, setSecretsSaved] = useState(false)
+  const [savingSecrets, setSavingSecrets] = useState(false)
+  const [secretsError, setSecretsError] = useState("")
 
   // Current step
   const [step, setStep] = useState<1 | 2 | 3>(1)
+
+  // Progress modal
+  const [showProgressModal, setShowProgressModal] = useState(false)
 
   useEffect(() => {
     if (open) {
@@ -85,6 +99,8 @@ export function DeploymentModal({ open, onOpenChange, owner, repo, onDeploy }: D
     setSecrets([])
     setError("")
     setFrameworkError("")
+    setSecretsSaved(false)
+    setSecretsError("")
   }
 
   const loadFrameworks = async () => {
@@ -147,6 +163,7 @@ export function DeploymentModal({ open, onOpenChange, owner, repo, onDeploy }: D
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
+          project_id: `${owner}/${repo}`,
           repo_full_name: `${owner}/${repo}`,
           folder_path: folderPath,
         }),
@@ -215,23 +232,128 @@ export function DeploymentModal({ open, onOpenChange, owner, repo, onDeploy }: D
     setSecrets(secrets.filter((_, i) => i !== index))
   }
 
-  const handleDeploy = () => {
-    const secretsObj: Record<string, string> = {}
-    secrets.forEach((secret) => {
-      secretsObj[secret.key] = secret.value
+  const parseEnvFile = (content: string): Secret[] => {
+    const lines = content.split('\n')
+    const parsedSecrets: Secret[] = []
+
+    lines.forEach((line) => {
+      // Skip empty lines and comments
+      const trimmedLine = line.trim()
+      if (!trimmedLine || trimmedLine.startsWith('#')) {
+        return
+      }
+
+      // Parse KEY=VALUE format
+      const equalIndex = trimmedLine.indexOf('=')
+      if (equalIndex > 0) {
+        const key = trimmedLine.substring(0, equalIndex).trim()
+        let value = trimmedLine.substring(equalIndex + 1).trim()
+
+        // Remove quotes if present
+        if ((value.startsWith('"') && value.endsWith('"')) ||
+            (value.startsWith("'") && value.endsWith("'"))) {
+          value = value.substring(1, value.length - 1)
+        }
+
+        if (key) {
+          parsedSecrets.push({ key, value })
+        }
+      }
     })
 
-    onDeploy({
-      folderPath: currentPath,
-      framework: selectedFramework,
-      secrets: secretsObj,
-    })
+    return parsedSecrets
+  }
+
+  const handleEnvFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (file) {
+      const reader = new FileReader()
+      reader.onload = (e) => {
+        const content = e.target?.result as string
+        const parsedSecrets = parseEnvFile(content)
+
+        // Merge with existing secrets, avoiding duplicates
+        const existingKeys = new Set(secrets.map(s => s.key))
+        const newSecrets = parsedSecrets.filter(s => !existingKeys.has(s.key))
+        setSecrets([...secrets, ...newSecrets])
+      }
+      reader.readAsText(file)
+      // Reset input
+      event.target.value = ''
+    }
+  }
+
+  const handleEnvTextSubmit = () => {
+    if (envFileText.trim()) {
+      const parsedSecrets = parseEnvFile(envFileText)
+
+      // Merge with existing secrets, avoiding duplicates
+      const existingKeys = new Set(secrets.map(s => s.key))
+      const newSecrets = parsedSecrets.filter(s => !existingKeys.has(s.key))
+      setSecrets([...secrets, ...newSecrets])
+
+      setEnvFileText("")
+      setShowEnvTextArea(false)
+    }
+  }
+
+  const handleSaveSecrets = async () => {
+    if (secrets.length === 0) {
+      setSecretsError("Добавьте хотя бы один секрет перед сохранением")
+      return
+    }
+
+    setSavingSecrets(true)
+    setSecretsError("")
+
+    try {
+      const secretsObj: Record<string, string> = {}
+      secrets.forEach((secret) => {
+        secretsObj[secret.key] = secret.value
+      })
+
+      const projectId = `${owner}/${repo}`
+
+      const res = await fetch(`${SECRET_MANAGER_URL}/secrets`, {
+        method: "POST",
+        credentials: "include",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          project_id: projectId,
+          secrets: secretsObj,
+        }),
+      })
+
+      if (!res.ok) {
+        throw new Error(`Failed to save secrets: ${res.status}`)
+      }
+
+      setSecretsSaved(true)
+    } catch (e: any) {
+      setSecretsError(e?.message || "Failed to save secrets")
+    } finally {
+      setSavingSecrets(false)
+    }
+  }
+
+  const handleDeploy = () => {
+    // Close config modal and open progress modal
     onOpenChange(false)
+    setShowProgressModal(true)
   }
 
   const folders = contents.filter((item) => item.type === "dir")
 
+  // Build env vars object
+  const envVarsObj: Record<string, string> = {}
+  secrets.forEach((secret) => {
+    envVarsObj[secret.key] = secret.value
+  })
+
   return (
+    <>
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent onClose={() => onOpenChange(false)}>
         <DialogHeader>
@@ -422,15 +544,47 @@ export function DeploymentModal({ open, onOpenChange, owner, repo, onDeploy }: D
               )}
 
               {/* Add secret form */}
-              {!showSecretForm && (
-                <Button
-                  onClick={() => setShowSecretForm(true)}
-                  variant="outline"
-                  className="w-full border-primary/30 hover:border-primary/50"
-                >
-                  <Plus className="w-4 h-4 mr-2" />
-                  Добавить секрет
-                </Button>
+              {!showSecretForm && !showEnvTextArea && (
+                <div className="grid grid-cols-2 gap-3">
+                  <Button
+                    onClick={() => setShowSecretForm(true)}
+                    variant="outline"
+                    className="border-primary/30 hover:border-primary/50"
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    Добавить секрет
+                  </Button>
+
+                  <label className="cursor-pointer">
+                    <input
+                      type="file"
+                      accept=".env"
+                      onChange={handleEnvFileUpload}
+                      className="hidden"
+                    />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="w-full border-primary/30 hover:border-primary/50"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.currentTarget.parentElement?.querySelector('input')?.click()
+                      }}
+                    >
+                      <Upload className="w-4 h-4 mr-2" />
+                      Загрузить .env
+                    </Button>
+                  </label>
+
+                  <Button
+                    onClick={() => setShowEnvTextArea(true)}
+                    variant="outline"
+                    className="col-span-2 border-primary/30 hover:border-primary/50"
+                  >
+                    <FileText className="w-4 h-4 mr-2" />
+                    Вставить текст .env
+                  </Button>
+                </div>
               )}
 
               {showSecretForm && (
@@ -477,6 +631,65 @@ export function DeploymentModal({ open, onOpenChange, owner, repo, onDeploy }: D
                 </Card>
               )}
 
+              {showEnvTextArea && (
+                <Card className="p-4 bg-sidebar/50 border-primary/30">
+                  <div className="space-y-3">
+                    <div>
+                      <label className="block text-xs font-mono font-semibold mb-1">
+                        Вставьте содержимое .env файла:
+                      </label>
+                      <textarea
+                        value={envFileText}
+                        onChange={(e) => setEnvFileText(e.target.value)}
+                        placeholder="DATABASE_URL=postgresql://...&#10;API_KEY=your_key_here&#10;SECRET_TOKEN=your_token"
+                        rows={8}
+                        className="w-full p-2 bg-background border border-primary/20 rounded font-mono text-sm focus:outline-none focus:border-primary/50 resize-none"
+                      />
+                      <p className="text-xs text-muted-foreground mt-1">
+                        Формат: KEY=VALUE (по одной паре на строку)
+                      </p>
+                    </div>
+                    <div className="flex gap-2">
+                      <Button onClick={handleEnvTextSubmit} size="sm" className="flex-1">
+                        Импортировать
+                      </Button>
+                      <Button
+                        onClick={() => {
+                          setShowEnvTextArea(false)
+                          setEnvFileText("")
+                        }}
+                        variant="outline"
+                        size="sm"
+                        className="flex-1"
+                      >
+                        Отмена
+                      </Button>
+                    </div>
+                  </div>
+                </Card>
+              )}
+
+              {/* Secrets status messages */}
+              {secretsError && (
+                <Card className="p-4 bg-destructive/10 border-destructive/30">
+                  <div className="flex items-center gap-3">
+                    <AlertCircle className="w-5 h-5 text-destructive" />
+                    <p className="font-mono text-sm text-destructive">{secretsError}</p>
+                  </div>
+                </Card>
+              )}
+
+              {secretsSaved && (
+                <Card className="p-4 bg-green-500/10 border-green-500/30">
+                  <div className="flex items-center gap-3">
+                    <CheckCircle2 className="w-5 h-5 text-green-500" />
+                    <p className="font-mono text-sm text-green-500">
+                      Секреты успешно сохранены! Теперь можно запустить деплой.
+                    </p>
+                  </div>
+                </Card>
+              )}
+
               {/* Summary */}
               <Card className="p-4 bg-sidebar/50 border-primary/20">
                 <div className="space-y-3">
@@ -491,6 +704,12 @@ export function DeploymentModal({ open, onOpenChange, owner, repo, onDeploy }: D
                   <div>
                     <p className="text-xs font-mono text-muted-foreground mb-1">Секретов добавлено:</p>
                     <p className="font-mono text-sm text-primary">{secrets.length}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-mono text-muted-foreground mb-1">Статус секретов:</p>
+                    <p className="font-mono text-sm text-primary">
+                      {secretsSaved ? "✓ Сохранены" : "Не сохранены"}
+                    </p>
                   </div>
                 </div>
               </Card>
@@ -525,13 +744,46 @@ export function DeploymentModal({ open, onOpenChange, owner, repo, onDeploy }: D
           )}
 
           {step === 3 && (
-            <Button onClick={handleDeploy} disabled={!selectedFramework}>
-              <CheckCircle2 className="w-4 h-4 mr-2" />
-              Деплой
-            </Button>
+            <>
+              {!secretsSaved ? (
+                <Button
+                  onClick={handleSaveSecrets}
+                  disabled={!selectedFramework || secrets.length === 0 || savingSecrets}
+                >
+                  {savingSecrets ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Сохранение...
+                    </>
+                  ) : (
+                    <>
+                      <Shield className="w-4 h-4 mr-2" />
+                      Сохранить секреты
+                    </>
+                  )}
+                </Button>
+              ) : (
+                <Button onClick={handleDeploy} disabled={!selectedFramework}>
+                  <Rocket className="w-4 h-4 mr-2" />
+                  Запустить Деплой
+                </Button>
+              )}
+            </>
           )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
+
+    <DeploymentProgressModal
+      open={showProgressModal}
+      onOpenChange={setShowProgressModal}
+      repoFullName={`${owner}/${repo}`}
+      appName={repo}
+      branch="main"
+      port={8080}
+      subdirectory={currentPath || undefined}
+      envVars={envVarsObj}
+    />
+    </>
   )
 }

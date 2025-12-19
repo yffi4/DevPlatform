@@ -1,0 +1,63 @@
+# Traefik Static Configuration
+global:
+  checkNewVersion: true
+  sendAnonymousUsage: false
+
+api:
+  dashboard: true
+  insecure: true
+
+log:
+  level: INFO
+  format: json
+
+entryPoints:
+  web:
+    address: ":80"
+
+  websecure:
+    address: ":443"
+
+  metrics:
+    address: ":8082"
+
+providers:
+  # Consul Catalog provider for service discovery
+  consulCatalog:
+    endpoint:
+      address: "consul:8500"
+      scheme: http
+
+    prefix: "traefik"
+
+    # Only expose services with traefik.enable=true tag
+    exposedByDefault: false
+
+    # Refresh interval
+    refreshInterval: 5s
+
+    # Default rule for services
+    defaultRule: "Host(`{{ normalize .Name }}.localhost`)"
+
+    # Use Consul service metadata
+    constraints: ""
+
+  # File provider for static configuration
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true
+
+# Metrics
+metrics:
+  prometheus:
+    entryPoint: metrics
+    addEntryPointsLabels: true
+    addServicesLabels: true
+
+# Access logs
+accessLog:
+  format: json
+  fields:
+    defaultMode: keep
+    headers:
+      defaultMode: keep

@@ -53,13 +53,20 @@ async def github_callback(code: str):
             "X-GitHub-Api-Version": "2022-11-28",
             "User-Agent": "fastapi-app",
         }
-        gh_response = await client.get("https://api.github.com/user/repos", headers=gh_headers)
+        gh_response = await client.get("https://api.github.com/user", headers=gh_headers)
         gh_response.raise_for_status()
-        user_repos = gh_response.json()
+        user_data = gh_response.json()
 
 
     await producer.kafka_produser.send_event("user_registered", {
-        "repos": user_repos
+        "user": {
+            "id": user_data.get("id"),
+            "login": user_data.get("login"),
+            "github_token": access_token,
+            
+
+        }
+        
     })
 
 
@@ -129,6 +136,10 @@ async def get_github_repos(request: Request):
         repos_response.raise_for_status()
         repos_data = repos_response.json()
 
+        await producer.kafka_produser.send_event("repos_resp", {
+            "repos": repos_data
+        })
+
     return {
         "user": user_data,
         "repos": repos_data
@@ -179,54 +190,54 @@ async def get_repo_contents(owner: str, repo: str, request: Request, path: str =
     }
 
 
-@router.post("/github/deploy")
-async def deploy_repository(deploy_request: DeployRequest, request: Request):
-    """Send selected repository and folder to Kafka for deployment"""
+# @router.post("/github/deploy")
+# async def deploy_repository(deploy_request: DeployRequest, request: Request):
+#     """Send selected repository and folder to Kafka for deployment"""
 
-    session_token = request.cookies.get("session")
-    if not session_token:
-        raise HTTPException(status_code=401, detail="Not authenticated")
+#     session_token = request.cookies.get("session")
+#     if not session_token:
+#         raise HTTPException(status_code=401, detail="Not authenticated")
 
-    try:
-        payload = jwt.decode(session_token, JWT_SECRET, algorithms=["HS256"])
-        access_token = payload.get("token")
+#     try:
+#         payload = jwt.decode(session_token, JWT_SECRET, algorithms=["HS256"])
+#         access_token = payload.get("token")
 
-        if not access_token:
-            raise HTTPException(status_code=401, detail="Invalid token")
-    except jwt.ExpiredSignatureError:
-        raise HTTPException(status_code=401, detail="Token expired")
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=401, detail="Invalid token")
+#         if not access_token:
+#             raise HTTPException(status_code=401, detail="Invalid token")
+#     except jwt.ExpiredSignatureError:
+#         raise HTTPException(status_code=401, detail="Token expired")
+#     except jwt.InvalidTokenError:
+#         raise HTTPException(status_code=401, detail="Invalid token")
 
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        gh_headers = {
-            "Authorization": f"Bearer {access_token}",
-            "Accept": "application/vnd.github+json",
-            "X-GitHub-Api-Version": "2022-11-28",
-            "User-Agent": "fastapi-app",
-        }
+#     async with httpx.AsyncClient(timeout=20.0) as client:
+#         gh_headers = {
+#             "Authorization": f"Bearer {access_token}",
+#             "Accept": "application/vnd.github+json",
+#             "X-GitHub-Api-Version": "2022-11-28",
+#             "User-Agent": "fastapi-app",
+#         }
 
-        user_response = await client.get("https://api.github.com/user", headers=gh_headers)
-        user_response.raise_for_status()
-        user_data = user_response.json()
+#         user_response = await client.get("https://api.github.com/user", headers=gh_headers)
+#         user_response.raise_for_status()
+#         user_data = user_response.json()
 
-    await producer.kafka_produser.send_event("choose_settings_requested", {
-        "user": {
-            "id": user_data.get("id"),
-            "login": user_data.get("login"),
-        },
-        "repository": {
-            "owner": deploy_request.owner,
-            "name": deploy_request.repo,
-            "full_name": f"{deploy_request.owner}/{deploy_request.repo}",
-            "folder_path": deploy_request.folder_path,
-        },
-        "github_token": access_token,
-    })
+#     await producer.kafka_produser.send_event("choose_settings_requested", {
+#         "user": {
+#             "id": user_data.get("id"),
+#             "login": user_data.get("login"),
+#         },
+#         "repository": {
+#             "owner": deploy_request.owner,
+#             "name": deploy_request.repo,
+#             "full_name": f"{deploy_request.owner}/{deploy_request.repo}",
+#             "folder_path": deploy_request.folder_path,
+#         },
+#         "github_token": access_token,
+#     })
 
-    return {
-        "status": "success",
-        "message": "Deployment request sent to queue",
-        "repository": f"{deploy_request.owner}/{deploy_request.repo}",
-        "folder_path": deploy_request.folder_path or "/"
-    }
+#     return {
+#         "status": "success",
+#         "message": "Deployment request sent to queue",
+#         "repository": f"{deploy_request.owner}/{deploy_request.repo}",
+#         "folder_path": deploy_request.folder_path or "/"
+#     }

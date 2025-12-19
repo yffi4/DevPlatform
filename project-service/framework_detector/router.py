@@ -25,6 +25,7 @@ async def detect_framework(request: Request, body: DetectFrameworkRequest):
     1. Analyzes the repository structure
     2. Detects the framework(s) used
     3. Sends an event to Kafka for CI/CD pipeline setup
+    4. Notifies Secret Manager service about the project
     """
     github_token = FrameworkDetector.get_github_token_from_jwt(request)
 
@@ -33,10 +34,19 @@ async def detect_framework(request: Request, body: DetectFrameworkRequest):
         detector = FrameworkDetector(github_token)
 
         # Detect framework
-        result = await detector.detect_framework(body.repo_full_name, body.folder_path or "")
+        result = await detector.detect_framework(body.project_id, body.repo_full_name, body.folder_path or "")
 
-        # Send event to Kafka
+        # Send event to Kafka for CI/CD pipeline
         await kafka_producer.send_framework_detected(result)
+
+        # Send event to Kafka for Secret Manager if framework was detected
+        if result.get("primary_framework"):
+            await kafka_producer.send_project_framework_detected(
+                repo_full_name=body.repo_full_name,
+                framework=result.get("primary_framework"),
+                language=result.get("language"),
+                user_id=body.user_id
+            )
 
         return result
 
@@ -69,19 +79,23 @@ async def request_deployment(request: Request, body: DeploymentRequest):
                 )
 
             # Use manually selected framework
-            framework_data = await detector.detect_framework(body.repo_full_name, body.folder_path or "")
+            framework_data = await detector.detect_framework(body.project_id, body.repo_full_name, body.folder_path or "")
             framework_data["primary_framework"] = body.framework
             # Update buildpack based on manual selection
             framework_data["buildpack"] = detector._get_buildpack(body.framework, framework_data.get("language"))
         else:
             # Auto-detect framework
-            framework_data = await detector.detect_framework(body.repo_full_name, body.folder_path or "")
+            framework_data = await detector.detect_framework(body.project_id, body.repo_full_name, body.folder_path or "")
 
         if not framework_data.get("primary_framework"):
             raise HTTPException(
                 status_code=400,
                 detail="Could not detect framework for this repository. Please select a framework manually."
             )
+
+        # NOTE: Secrets should be stored separately via Secret Manager service
+        # before calling /deploy endpoint. Secrets are no longer sent during deployment.
+        # Users must explicitly save secrets via frontend before deploying.
 
         # Send deployment request to Kafka
         await kafka_producer.send_deployment_request(
@@ -98,7 +112,8 @@ async def request_deployment(request: Request, body: DeploymentRequest):
             "secrets_count": len(body.secrets) if body.secrets else 0,
             "message": "Deployment request sent to CI/CD pipeline"
         }
-
+    
+        
     except HTTPException:
         raise
     except Exception as e:

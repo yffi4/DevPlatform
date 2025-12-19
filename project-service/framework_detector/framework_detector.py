@@ -140,7 +140,7 @@ class FrameworkDetector:
     def __init__(self, github_token: str):
         self.github_token = github_token
 
-    async def detect_framework(self, repo_full_name: str, folder_path: str = "") -> Dict:
+    async def detect_framework(self, project_id: str, repo_full_name: str, folder_path: str = "") -> Dict:
         """
         Detect framework for a GitHub repository
 
@@ -156,6 +156,7 @@ class FrameworkDetector:
 
         if not repository_files:
             return {
+                "project_id": project_id,
                 "repo": repo_full_name,
                 "frameworks": [],
                 "primary_framework": None,
@@ -175,6 +176,8 @@ class FrameworkDetector:
         has_dockerfile = "Dockerfile" in repository_files or "docker-compose.yml" in repository_files
 
         return {
+            
+            "project_id": project_id,
             "repo": repo_full_name,
             "frameworks": detected_frameworks,
             "primary_framework": primary_framework,
@@ -298,13 +301,79 @@ class FrameworkDetector:
                 return framework
 
         return frameworks[0] if frameworks else None
-    
 
+    def _get_buildpack(self, framework: Optional[str], language: Optional[str]) -> str:
+        """Determine buildpack based on framework and language"""
+        if not framework and not language:
+            return "heroku/buildpacks:20"
+
+        # Map framework/language to buildpack
+        buildpack_map = {
+            # Python
+            "FastAPI": "heroku/python",
+            "Flask": "heroku/python",
+            "Django": "heroku/python",
+
+            # Node.js/JavaScript
+            "Next.js": "heroku/nodejs",
+            "React": "heroku/nodejs",
+            "Vue.js": "heroku/nodejs",
+            "Angular": "heroku/nodejs",
+            "Express": "heroku/nodejs",
+            "Nest.js": "heroku/nodejs",
+
+            # Java
+            "Spring Boot": "heroku/java",
+            "Micronaut": "heroku/java",
+            "Quarkus": "heroku/java",
+
+            # Go
+            "Go Fiber": "heroku/go",
+            "Gin": "heroku/go",
+            "Echo": "heroku/go",
+
+            # Ruby
+            "Ruby on Rails": "heroku/ruby",
+            "Sinatra": "heroku/ruby",
+
+            # PHP
+            "Laravel": "heroku/php",
+            "Symfony": "heroku/php",
+
+            # .NET
+            ".NET": "heroku/dotnet",
+            "ASP.NET Core": "heroku/dotnet",
+        }
+
+        # Try framework first
+        if framework and framework in buildpack_map:
+            return buildpack_map[framework]
+
+        # Fallback to language
+        language_buildpacks = {
+            "Python": "heroku/python",
+            "JavaScript": "heroku/nodejs",
+            "TypeScript": "heroku/nodejs",
+            "Java": "heroku/java",
+            "Go": "heroku/go",
+            "Ruby": "heroku/ruby",
+            "PHP": "heroku/php",
+            "C#": "heroku/dotnet"
+        }
+
+        if language and language in language_buildpacks:
+            return language_buildpacks[language]
+
+        # Default buildpack
+        return "heroku/buildpacks:20"
+
+    @staticmethod
     def get_github_token_from_jwt(request: Request) -> str:
         """Extract GitHub token from JWT cookie"""
         session_token = request.cookies.get("session")
 
-        
+        if not session_token:
+            raise HTTPException(status_code=401, detail="Session token not found")
 
         try:
             payload = jwt.decode(session_token, JWT_SECRET, algorithms=["HS256"])
@@ -319,60 +388,8 @@ class FrameworkDetector:
         except jwt.InvalidTokenError:
             raise HTTPException(status_code=401, detail="Invalid token")
 
-    def _get_buildpack(self, framework: Optional[str], language: Optional[str]) -> str:
-        """Get appropriate buildpack for framework"""
-        buildpack_map = {
-            # Python
-            "Django": "heroku/python",
-            "Flask": "heroku/python",
-            "FastAPI": "heroku/python",
+    
 
-            # JavaScript/TypeScript
-            "Next.js": "heroku/nodejs",
-            "React": "heroku/nodejs",
-            "Vue.js": "heroku/nodejs",
-            "Angular": "heroku/nodejs",
-            "Express": "heroku/nodejs",
-            "Nest.js": "heroku/nodejs",
-
-            # Go
-            "Go Fiber": "heroku/go",
-            "Gin": "heroku/go",
-            "Echo": "heroku/go",
-
-            # Java
-            "Spring Boot": "heroku/java",
-            "Micronaut": "heroku/java",
-            "Quarkus": "heroku/java",
-
-            # Ruby
-            "Ruby on Rails": "heroku/ruby",
-            "Sinatra": "heroku/ruby",
-
-            # PHP
-            "Laravel": "heroku/php",
-            "Symfony": "heroku/php",
-
-            # .NET
-            ".NET": "heroku/dotnet",
-            "ASP.NET Core": "heroku/dotnet"
-        }
-
-        if framework and framework in buildpack_map:
-            return buildpack_map[framework]
-
-        # Fallback to language
-        language_map = {
-            "JavaScript": "heroku/nodejs",
-            "TypeScript": "heroku/nodejs",
-            "Python": "heroku/python",
-            "Go": "heroku/go",
-            "Java": "heroku/java",
-            "Ruby": "heroku/ruby",
-            "PHP": "heroku/php",
-            "C#": "heroku/dotnet"
-        }
-
-        return language_map.get(language, "heroku/buildpack")
+       
     
 

@@ -3,11 +3,14 @@ from typing import Optional, List, Dict
 
 
 class DetectFrameworkRequest(BaseModel):
+    project_id: str
     repo_full_name: str
     folder_path: Optional[str] = ""
+    user_id: Optional[str] = None
 
 
 class DeploymentRequest(BaseModel):
+    project_id: str
     repo_full_name: str
     folder_path: Optional[str] = ""
     user_id: Optional[str] = None
@@ -16,6 +19,7 @@ class DeploymentRequest(BaseModel):
 
 
 class FrameworkDetectionResponse(BaseModel):
+    project_id: str
     repo: str
     frameworks: List[str]
     primary_framework: Optional[str]
